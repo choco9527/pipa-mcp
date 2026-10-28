@@ -1,0 +1,18 @@
+{
+  "name": "@choco9527/pipa-cli",
+  "version": "0.1.0",
+  "description": "PIPA tasks and notes for people and agents: standalone CLI and MCP in one package with one shared login.",
+  "type": "module",
+  "bin": { "pipa": "src/bin.mjs" },
+  "files": ["src", "skills", "README.md", "LICENSE", "npm-shrinkwrap.json"],
+  "engines": { "node": ">=22" },
+  "os": ["darwin", "win32"],
+  "scripts": { "test": "node --test test/*.test.mjs", "check": "node --check src/bin.mjs && node --check src/index.mjs", "pack:check": "npm pack --dry-run" },
+  "repository": { "type": "git", "url": "git+https://github.com/choco9527/pipa-mcp.git" },
+  "license": "MIT",
+  "publishConfig": { "access": "public", "registry": "https://registry.npmjs.org/" },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "proper-lockfile": "4.1.2"
+  }
+}
