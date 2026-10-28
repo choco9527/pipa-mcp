@@ -18,6 +18,41 @@ const base = { account_id: '11111111-1111-4111-8111-111111111111', grant_id: '22
   scopes: ['tasks:read'], expires_at: Math.floor(Date.now() / 1000) + 86400 }
 const catalog = [{ name: 'pipa_tasks_search', description: 'Test task search', inputSchema: { type: 'object' }, mutation: false, destructive: false }]
 
+function bounded(promise, milliseconds, description) {
+  let timer
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Timed out waiting for ${description}`)), milliseconds)
+  })
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
+}
+
+async function closeMcp({ client, transport }, errors) {
+  // Keep the child handle: the SDK clears its reference while shutting down.
+  const child = transport._process
+  const exited = child?.pid && child.exitCode === null && child.signalCode === null
+    ? new Promise((resolve) => child.once('exit', resolve)) : Promise.resolve()
+  for (const [description, close] of [['MCP client', () => client.close()], ['MCP transport', () => transport.close()]]) {
+    try { await bounded(Promise.resolve().then(close), 7000, description) } catch (error) { errors.push(error) }
+  }
+  try { if (child?.pid && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL') }
+  catch (error) { errors.push(error) }
+  try { await bounded(exited, 5000, 'MCP child exit') } catch (error) { errors.push(error) }
+}
+
+async function cleanupFixture({ clients, server, directory }) {
+  const errors = []
+  for (const connection of [...clients].reverse()) {
+    try { await closeMcp(connection, errors) } catch (error) { errors.push(error) }
+  }
+  try {
+    server.closeAllConnections()
+    if (server.listening) await bounded(new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())), 5000, 'fixture server close')
+  } catch (error) { errors.push(error) }
+  try { await bounded(rm(directory, { recursive: true, force: true, maxRetries: 6, retryDelay: 100 }), 10000, 'fixture directory removal') }
+  catch (error) { errors.push(error) }
+  if (errors.length) throw new AggregateError(errors, 'Fixture cleanup failed')
+}
+
 function tokenResponse(state) {
   const suffix = String.fromCharCode(97 + state.issuances++).repeat(43)
   const result = { ...base, token_type: 'Bearer', access_token: `paa1_${suffix}`, refresh_token: `par1_${suffix}`,
@@ -55,21 +90,22 @@ async function respond(request, response, state) {
 async function fixture(t) {
   const directory = await mkdtemp(path.join(tmpdir(), 'pipa-entrypoints-'))
   const state = { devices: 0, issuances: 0, access: new Set(), revoked: false, origin: '' }
+  const clients = []
   const server = createServer((request, response) => { void respond(request, response, state).catch(() => { response.writeHead(500); response.end() }) })
+  t.after(() => cleanupFixture({ clients, server, directory }))
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
   state.origin = `http://127.0.0.1:${server.address().port}`
-  t.after(async () => { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); await rm(directory, { recursive: true, force: true }) })
   // Mock homedir inside test child processes only; never change the real HOME or read real credentials.
   const preload = path.join(directory, 'test-home.mjs')
   await writeFile(preload, `import os from 'node:os'; import { syncBuiltinESMExports } from 'node:module';\nos.homedir = () => ${JSON.stringify(directory)}; syncBuiltinESMExports();\n`)
   const common = ['--import', pathToFileURL(preload).href, bin, '--server', state.origin, '--profile', 'shared']
-  return { state, common, directory, cli: (args) => execute(process.execPath, [...common, ...args], { timeout: 30000, cwd: directory }) }
+  return { state, common, directory, clients, cli: (args) => execute(process.execPath, [...common, ...args], { timeout: 30000, cwd: directory }) }
 }
 
-async function mcpClient(t, fixture) {
+async function mcpClient(fixture) {
   const client = new Client({ name: 'independent-client-fixture', version: '1' })
   const transport = new StdioClientTransport({ command: process.execPath, args: [...fixture.common, 'mcp'], cwd: fixture.directory, stderr: 'pipe' })
-  t.after(async () => { await client.close(); await transport.close() })
+  fixture.clients.push({ client, transport })
   await client.connect(transport)
   return client
 }
@@ -79,7 +115,7 @@ test('real CLI login is immediately usable by independent MCP, repeated login re
   const loggedIn = await fixtureData.cli(['login', '--json'])
   assert.equal(JSON.parse(loggedIn.stdout).state, 'connected')
   assert.match(loggedIn.stderr, /配对码/)
-  const mcp = await mcpClient(t, fixtureData)
+  const mcp = await mcpClient(fixtureData)
   assert.equal((await mcp.callTool({ name: 'pipa_connection_status', arguments: {} })).structuredContent.state, 'connected')
   const tasks = await mcp.callTool({ name: 'pipa_tasks_search', arguments: {} })
   assert.equal(tasks.structuredContent.tasks[0].title, 'Isolated fixture task')
@@ -94,7 +130,7 @@ test('real CLI login is immediately usable by independent MCP, repeated login re
 
 test('real MCP login is immediately usable by a standalone CLI process without a second pairing', { timeout: 60000 }, async (t) => {
   const fixtureData = await fixture(t)
-  const mcp = await mcpClient(t, fixtureData)
+  const mcp = await mcpClient(fixtureData)
   const pairing = await mcp.callTool({ name: 'pipa_connect', arguments: {} })
   assert.equal(pairing.structuredContent.state, 'awaiting_user')
   let status

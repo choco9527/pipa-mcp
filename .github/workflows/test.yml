@@ -28,5 +28,6 @@ jobs:
         if: runner.os == 'Windows'
         run: node --test test/windows-acl.test.mjs
       - run: npm test
+        timeout-minutes: 3
       - run: npm run check
       - run: npm run pack:check
