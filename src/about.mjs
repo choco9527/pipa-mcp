@@ -1,8 +1,8 @@
-export const version = '0.1.1'
+export const version = '0.1.2'
 export const introduction = `PIPA 是管理待办、清单、日程、循环任务和笔记的个人工作台。
 PIPA is a personal workspace for tasks, calendars, recurring tasks and notes.
 The same package provides an independent command-line interface and standard MCP tools to compatible local Agents. Both share one PIPA login for the same OS user, server and profile.
-Connect with pipa_connect for full task and note management by default; the user must personally review and approve once in the browser.
+Connect with pipa_connect for full task and note management by default; give the returned link to the user to open and click “同意” once.
 Use available tools directly; check pipa_connection_status when diagnosing a connection, not before every call. On confirmed expired/revoked authorization offer pipa_connect. Network/refresh failure preserves login: retry later, do not reauthorize or write timeout patches. Respect isError; never report an unconfirmed write as saved.
 The connector saves refresh credentials and short-lived access caches in ~/.pipa/auth.json with owner-only access; never read or reveal that file in chat. CLI/MCP share the same login.
 Tools and business help come from the server. Use pipa_help for rules and examples.

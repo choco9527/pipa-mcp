@@ -1,7 +1,7 @@
 export const quickStart = `PIPA 是你的待办、日程和笔记工具；人和 AI 都可以通过这个程序操作。
 
 第一次使用：
-  pipa login                   显示链接，请本人打开网页并确认一次
+  pipa login                   打开显示的链接，点击“同意”
   pipa tasks list --json        查看未完成待办
   pipa notes list --json        查看笔记
 
@@ -17,7 +17,7 @@ export const mainHelp = `PIPA CLI — 管理待办、日程、循环任务和笔
 
 用法：pipa [--server HTTPS地址] [--profile 名称] [--json] <命令>
 
-第一次用？运行 pipa login，本人打开链接确认；随后 pipa tasks list --json。
+第一次用？运行 pipa login，打开链接点“同意”；随后 pipa tasks list --json。
 登录一次，CLI/MCP 自动共用；已知命令直接调用，无需先查询整份工具目录。
 
   login                       登录或复用已有登录
@@ -52,7 +52,7 @@ export function helpFor(tokens) {
   if (name === 'status') return 'pipa status --json：实时检查连接。connected 可用；offline 稍后重试，不必重新登录；expired/revoked 执行 pipa login；blocked 按提示检查服务器。状态输出不含密钥。\n'
   if (name === 'mcp') return 'MCP 客户端配置 command: "pipa", args: ["mcp"]。和 CLI 共用一次登录。在普通终端运行后等待输入是正常的，它等待 MCP 协议，不是自然语言聊天。只用命令行无需启动 MCP。\n'
   if (name === 'tasks create') return taskCreateHelp
-  if (name === 'login') return 'pipa login：显示授权链接和配对码并等待；请用户亲自打开网页、核对信息并确认。\n'
+  if (name === 'login') return 'pipa login：打开显示的链接，点击“同意”即可；程序会等待连接完成。\n'
   if (name === 'logout') return 'pipa logout --yes：撤销当前 profile 的共享 Agent 授权，也会断开使用同一授权的 MCP。\n'
   if (name === 'call') return 'pipa call <pipa_工具名> --input \'<JSON对象>\'：调用服务端工具；先用 tools show 查看 Schema，写入必须包含 operation_id。\n'
   if (name === 'tools' || name.startsWith('tools ')) return 'pipa tools list 查看工具；pipa tools show <pipa_工具名> 查看服务端 Schema（最多缓存 5 分钟）。已知命令直接调用，不必每次重复查询。\n'

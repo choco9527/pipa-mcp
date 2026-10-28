@@ -2,7 +2,7 @@
 
 一个 npm 包，两种独立入口，一次安装、一次登录。管理 PIPA 的待办、清单、日程、循环任务和笔记。
 
-`0.1.1` 改善登录复用、有限网络重试和内置帮助；CLI/MCP 共用登录，临时网络失败不会清除授权。自建服务需先更新稳定 refresh 的 API，再升级本包。
+`0.1.2` 简化授权：打开链接，点一次“同意”即可。保留 `0.1.1` 的登录复用、有限网络重试和内置帮助；CLI/MCP 共用登录，临时网络失败不会清除授权。自建服务需更新简洁授权页；从更旧版本升级时还需先更新稳定 refresh 的 API。
 
 - **CLI**：`pipa --help`，执行命令、返回结果、退出；任何能运行终端命令的 Agent 都可以调用，不需要配置 MCP。
 - **MCP**：`pipa mcp`，以标准 stdio 协议提供工具；不调用 CLI 子进程，不依赖某一家 AI 客户端。
@@ -13,7 +13,7 @@
 ## 第一次用，先看这里
 
 1. 安装后运行 `pipa --help` 或 `pipa help quickstart`，不需要先懂 MCP，也不需要安装 Skill。
-2. 运行 `pipa login`，本人打开显示的链接、确认一次。以后这台电脑会自动记住登录。
+2. 运行 `pipa login`，打开显示的链接，点击“同意”。以后这台电脑会自动记住登录。
 3. 运行 `pipa tasks list --json` 看待办，`pipa notes list --json` 看笔记。
 
 可以直接对 Agent 说：
@@ -36,7 +36,7 @@ pipa --help
 不依赖公共 npm 发布的方式，是从 [GitHub Releases](https://github.com/choco9527/pipa-mcp/releases) 安装同一份版本化 tarball：
 
 ```bash
-npm install -g --ignore-scripts https://github.com/choco9527/pipa-mcp/releases/download/v0.1.1/pipa-cli-0.1.1.tgz
+npm install -g --ignore-scripts https://github.com/choco9527/pipa-mcp/releases/download/v0.1.2/pipa-cli-0.1.2.tgz
 pipa --help
 ```
 
@@ -45,14 +45,14 @@ pipa --help
 ## 从旧版升级
 
 ```bash
-npm install -g --ignore-scripts @choco9527/pipa-cli@0.1.1 --registry=https://registry.npmjs.org
+npm install -g --ignore-scripts @choco9527/pipa-cli@0.1.2 --registry=https://registry.npmjs.org
 pipa --version
 pipa help quickstart
 ```
 
 已有有效登录会直接复用，不要先 logout，也不要删除 `.pipa`。如果旧版已清除了登录或授权确实失效，再运行一次 `pipa login`。常驻 MCP 需重新启动该连接器进程才能加载新版，不必重装或更改其他 Agent 配置。
 
-使用 npx 时指定 `@choco9527/pipa-cli@0.1.1`，避免继续使用旧版本；有终端能力的 Agent 可以直接调用 CLI，不要求配置 MCP。
+使用 npx 时指定 `@choco9527/pipa-cli@0.1.2`，避免继续使用旧版本；有终端能力的 Agent 可以直接调用 CLI，不要求配置 MCP。
 
 ## 登录一次
 
@@ -61,7 +61,7 @@ pipa login
 pipa status --json
 ```
 
-`login` 显示授权链接和配对码并等待。由本人打开链接、核对域名、账户和配对码、确认一次完整的待办/笔记管理权限；程序不会代开浏览器或批准。已有可用登录会复用，不创建第二份授权。网页仍受 PIPA 与 Cloudflare 的登录策略保护，公开安装包不代表自动取得网站访问权。
+`login` 显示授权链接并等待。本人打开链接，点击“同意”即可；无需输入配对码或逐项选择权限。程序不会代开浏览器或批准。已有可用登录会复用，不创建第二份授权。网页仍受 PIPA 与 Cloudflare 的登录策略保护，公开安装包不代表自动取得网站访问权。
 
 登录后 CLI 和 MCP 共用授权，短期 access token 自动刷新。新授权有效期 365 天，刷新不延长原到期日，可随时撤销。CF 网页登录到期不等于 Agent 授权到期。
 

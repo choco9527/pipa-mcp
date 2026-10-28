@@ -257,7 +257,7 @@ async function login(auth, client, { output, errorOutput, json, signal, sleep })
   }
   const start = await auth.begin()
   validateLoginPrompt(start)
-  const prompt = `请本人打开授权链接，核对账户和配对码并确认：\n${start.verification_uri}\n配对码：${start.user_code}\n等待授权中…\n`
+  const prompt = `打开链接，点击“同意”：\n${start.verification_uri}\n`
   ;(json ? errorOutput : output).write(prompt)
   const status = await waitForLogin(auth, client, start, { signal, sleep })
   if (status.state !== 'connected') throw new CliError(status.code ?? 'login_failed', status.message ?? '无法确认连接状态。')

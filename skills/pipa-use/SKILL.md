@@ -11,7 +11,7 @@ PIPA 是个人工作台，包含清单、待办、日历、循环任务和笔记
 
 - CLI 和 MCP 是同一个包的独立入口，不需要分别安装或登录。已有工具或已知命令直接调用；仅终端可用时先读 `pipa --help`，不熟悉参数才查一次 `pipa tools show <工具名> --json`。不要每次串行执行 status/list/show；目录会短时缓存，登录会自动复用。不要为使用 CLI 先启动 MCP。
 - CLI 登录用 `pipa login`，保持进程等待本人完成网页授权；同一系统用户、服务/profile 的 MCP 自动复用，反之亦然。退出 `pipa logout --yes` 或 `pipa_disconnect` 会撤销两者的共享授权，不能为移除一个客户端而擅自断开。
-- 需要介绍或排查连接时再调用 `pipa_about` / `pipa_connection_status`（CLI 为 `pipa status --json`）。尚未连接时，用 `pipa_connect` 返回的链接和配对码请用户亲自登录、核对并授权。
+- 需要介绍或排查连接时再调用 `pipa_about` / `pipa_connection_status`（CLI 为 `pipa status --json`）。尚未连接时，把 `pipa_connect` 返回的链接交给用户，打开后点“同意”即可，无需手填配对码。
 - 正常连接调用 `pipa_connect` 不传 `scopes`，默认申请完整管理待办和笔记（含增删改查、完成/恢复、循环和提醒），用户一次确认，不必拆成多轮权限申请。旧只读连接需先说明将断开当前连接，经用户同意后 `pipa_disconnect` 再重新连接确认；不静默提权或改动其他 profile。
 - 不代用户批准，不索取密码、Cookie 或 Token。官方连接器自动维护用户目录 `.pipa/auth.json`（明文、仅用户权限）；不要读出、复制到聊天或命令，也不手动修改。连接状态用工具查询。
 - 工具不可用时说明连接状态，不假装已连接；不要自行安装到用户的 Agent 配置。

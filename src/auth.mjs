@@ -251,5 +251,5 @@ function validateDevice(device) {
     || uri.search || uri.hash !== `#code=${device.user_code}` || !Number.isSafeInteger(device.expires_at) || device.expires_at <= Date.now() / 1000 || device.expires_at > Date.now() / 1000 + 660
     || !Number.isSafeInteger(device.interval) || device.interval < 5 || device.interval > 60) throw new APIError('invalid_authorization_response')
   return { state: 'awaiting_user', verification_uri: uri.toString(), user_code: device.user_code, expires_at: device.expires_at,
-    message: 'User: personally open this link, verify the domain and pairing code, log in, review the requested access and confirm the connection. Do not ask the Agent to approve for you. Then use pipa_connection_status.' }
+    message: '请用户打开链接，点击“同意”即可。Open the link and click “同意” (Agree). The Agent must not approve for the user.' }
 }

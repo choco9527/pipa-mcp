@@ -150,6 +150,8 @@ test('login prints link for the user and waits until the connection is verified'
   assert.equal(await f.run(['login'], { sleep }), 0)
   assert.match(f.out.text(), /https:\/\/pipa\.chooco\.top\/agent\/authorize/)
   assert.match(f.out.text(), /ABCDEFG234567/)
+  assert.match(f.out.text(), /点击“同意”/)
+  assert.doesNotMatch(f.out.text(), /配对码：|核对账户/)
   assert.match(f.out.text(), /connected/)
   assert.equal(f.closed(), 1)
 })

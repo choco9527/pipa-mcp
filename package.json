@@ -1,6 +1,6 @@
 {
   "name": "@choco9527/pipa-cli",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "PIPA tasks and notes for people and agents: standalone CLI and MCP in one package with one shared login.",
   "type": "module",
   "bin": { "pipa": "src/bin.mjs" },
