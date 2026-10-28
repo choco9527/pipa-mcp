@@ -78,6 +78,7 @@ test('logout retries only a confirmed expired access token, once', async (t) => 
   await store.withLock(() => store.save(original))
   let logouts = 0, refreshes = 0
   const auth = new AuthSession({ server: store.server, store, request: async (_origin, route) => {
+    if (route === '/help') return {}
     if (route === '/token') { refreshes++; return refreshed }
     if (route === '/logout' && ++logouts === 1) throw new APIError('access_token_expired', 401)
     if (route === '/logout') return { revoked: true }
@@ -90,7 +91,7 @@ test('logout retries only a confirmed expired access token, once', async (t) => 
   assert.equal(await store.metadata(), null)
 })
 
-test('refresh by another process leaves the first unexpired access token usable', async (t) => {
+test('another process reuses live access without consuming any refresh token', async (t) => {
   const store = await fixture(t), original = tokens('a'), first = tokens('b'), second = tokens('c')
   await store.withLock(() => store.save(original))
   let refreshes = 0
@@ -100,10 +101,10 @@ test('refresh by another process leaves the first unexpired access token usable'
   }
   const a = new AuthSession({ server: store.server, store, request })
   const b = new AuthSession({ server: store.server, store, request })
-  assert.equal(await a.accessToken(), first.access_token)
-  assert.equal(await b.accessToken(), second.access_token)
-  assert.equal(await a.accessToken(), first.access_token)
-  assert.equal(refreshes, 2)
+  assert.equal(await a.accessToken(), original.access_token)
+  assert.equal(await b.accessToken(), original.access_token)
+  assert.equal(await a.accessToken(), original.access_token)
+  assert.equal(refreshes, 0)
 })
 
 function accessFailure(code, identity) {
@@ -129,8 +130,8 @@ test('a stale access rejection cannot clear a sibling process newer refresh cred
   assert.equal((await store.credential(await store.metadata()))?.refresh_token, rotated.refresh_token)
   assert.equal(auth.access, null)
   assert.equal((await auth.status()).state, 'unverified')
-  assert.equal(await auth.accessToken(), next.access_token)
-  assert.equal(refreshes, 1)
+  assert.equal(await auth.accessToken(), rotated.access_token)
+  assert.equal(refreshes, 0)
 })
 
 test('an ambiguous access 401 retains a matching refresh and never retries on its own', async (t) => {
@@ -222,10 +223,13 @@ test('a refresh response from another grant cannot cause that grant to be revoke
   await store.withLock(() => store.save(original))
   let logouts = 0
   const auth = new AuthSession({ server: store.server, store, request: async (_origin, route) => {
+    if (route === '/help') return {}
     if (route === '/token') return unexpected
     if (route === '/logout') { logouts++; return { revoked: true } }
     throw new Error('unexpected request')
   } })
-  await assert.rejects(auth.accessToken(), { code: 'refresh_result_uncertain' })
+  await auth.rejectAccess(original.access_token)
+  await assert.rejects(auth.accessToken(), { code: 'credential_identity_changed' })
   assert.equal(logouts, 0)
+  assert.ok(await store.metadata())
 })

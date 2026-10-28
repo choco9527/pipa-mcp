@@ -65,7 +65,7 @@ export class PrivateFiles {
     }
   }
   file(name) {
-    if (!['auth.json', 'config.json'].includes(name)) throw new Error('invalid_private_filename')
+    if (!['auth.json', 'config.json', 'tools.json'].includes(name)) throw new Error('invalid_private_filename')
     return path.join(this.directory, name)
   }
   async read(name) {

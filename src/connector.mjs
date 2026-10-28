@@ -4,7 +4,7 @@ import { introduction, version } from './about.mjs'
 import { scopes } from './auth.mjs'
 import { APIError, requestJSON } from './http.mjs'
 import { PipaClient } from './client.mjs'
-import { connectionFailure, describeConnection, expiryNotice } from './connection-state.mjs'
+import { connectionFailure, describeConnection } from './connection-state.mjs'
 
 const emptySchema = { type: 'object', properties: {}, additionalProperties: false }
 const localTools = [
@@ -59,9 +59,9 @@ export class Connector {
       if (name === 'pipa_about') return toolResult({ product: 'PIPA', introduction, server: this.origin, capabilities: 'Tasks, calendars, recurrence and notes. Server-maintained tools/help after authorization.', discovery_error: this.discoveryError || undefined })
       if (name === 'pipa_connect') return toolResult(await this.auth.begin(args.scopes))
       if (name === 'pipa_connection_status') {
-        await this.discover(); const status = await this.auth.status()
-        return toolResult({ ...status, connection_notice: expiryNotice(status),
-          discovery_error: ['signed_out', 'awaiting_user'].includes(status.state) ? undefined : this.discoveryError || undefined })
+        const status = await this.client.status({ signal })
+        if (this.client.tools === null && this.tools.length) { this.tools = []; await this.changed() }
+        return toolResult(status)
       }
       const result = await this.auth.disconnect(signal); this.tools = []; await this.changed(); return toolResult(result)
     }
@@ -93,7 +93,8 @@ export class Connector {
     return toolResult({ error: error instanceof APIError ? error.code.split(':', 1)[0] : 'connector_error',
       message: recovery?.message ?? (error.code === 'insufficient_scope' ? '当前连接缺少此操作权限，不代表授权过期。' : '操作未确认成功，请根据错误检查参数或重新读取数据。'),
       next_action: recovery?.next_action ?? (error.code === 'insufficient_scope' ? 'review_permissions' : 'check_request'),
-      retryable: recovery?.retryable ?? false, reconnect_required: recovery?.reconnect_required ?? false, connection }, true)
+      retryable: recovery?.retryable ?? false, reconnect_required: recovery?.reconnect_required ?? false, connection,
+      ...(error?.diagnostics ? { diagnostics: error.diagnostics } : {}) }, true)
   }
   async changed() { await this.server.sendToolListChanged().catch(() => {}) }
   async close() { this.closed = true; clearInterval(this.timer); this.auth.close(); await this.server.close() }

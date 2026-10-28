@@ -9,17 +9,18 @@ import { APIError } from '../src/http.mjs'
 
 const account = '11111111-1111-4111-8111-111111111111', grant = '22222222-2222-4222-8222-222222222222'
 function tokens(letter = 'a') { return { account_id: account, grant_id: grant, access_token: `paa1_${letter.repeat(43)}`, refresh_token: `par1_${letter.repeat(43)}`, token_type: 'Bearer', scopes: ['tasks:read'], access_expires_at: Math.floor(Date.now() / 1000) + 900, expires_at: Math.floor(Date.now() / 1000) + 86400 } }
+function refreshOnly(value = tokens()) { const { access_token: _token, access_expires_at: _expires, ...result } = value; return result }
 async function fixture(t) {
   const directory = await mkdtemp(path.join(tmpdir(), 'pipa-agent-test-'))
   t.after(() => rm(directory, { recursive: true, force: true }))
   return new CredentialStore({ directory, server: 'https://pipa.test', profile: 'test' })
 }
 
-test('only refresh credentials go into auth.json; config and status expose no tokens', async (t) => {
+test('access and refresh caches are private in auth.json; config and metadata expose neither', async (t) => {
   const store = await fixture(t), value = tokens()
   await store.withLock(() => store.save(value))
   const stored = await readFile(store.file, 'utf8'), config = await readFile(store.configFile, 'utf8')
-  assert.ok(!stored.includes(value.access_token)); assert.ok(stored.includes(value.refresh_token))
+  assert.ok(stored.includes(value.access_token)); assert.ok(stored.includes(value.refresh_token))
   assert.ok(!config.includes(value.access_token)); assert.ok(!config.includes(value.refresh_token))
   assert.ok(!JSON.stringify(await store.metadata()).includes(value.refresh_token))
   const restarted = new CredentialStore({ directory: store.directory, server: store.server, profile: store.profile })
@@ -28,25 +29,29 @@ test('only refresh credentials go into auth.json; config and status expose no to
   await store.forget(await store.metadata()); assert.equal(await store.credential(await store.metadata()), null)
 })
 
-test('two session refreshes share a lock and each rereads the rotated credential', async (t) => {
-  const store = await fixture(t); await store.save(tokens('a'))
+test('two sessions share a single refresh and reread the new access cache', async (t) => {
+  const store = await fixture(t); await store.save(refreshOnly())
   const used = []
   const request = async (_origin, route, { body }) => {
+    if (route === '/help') return {}
     assert.equal(route, '/token'); used.push(body.refresh_token)
     await new Promise((resolve) => setTimeout(resolve, 20))
     return tokens(used.length === 1 ? 'b' : 'c')
   }
   const a = new AuthSession({ server: store.server, store, request }), b = new AuthSession({ server: store.server, store, request })
   await Promise.all([a.accessToken(), b.accessToken()])
-  assert.deepEqual(used, [tokens('a').refresh_token, tokens('b').refresh_token])
+  assert.deepEqual(used, [tokens('a').refresh_token])
 })
 
-test('uncertain refresh is never retried and requires new authorization', async (t) => {
-  const store = await fixture(t); await store.save(tokens())
+test('an unexpected refresh transport failure keeps the shared login', async (t) => {
+  const store = await fixture(t); await store.save(refreshOnly())
   let calls = 0
-  const auth = new AuthSession({ server: store.server, store, request: async () => { calls++; throw new Error('lost response') } })
-  await assert.rejects(auth.accessToken(), /refresh_result_uncertain/)
-  assert.equal(calls, 1); assert.equal(await store.credential(await store.metadata()), null)
+  const auth = new AuthSession({ server: store.server, store, request: async (_origin, route) => {
+    if (route === '/help') return {}
+    calls++; throw new Error('lost response')
+  } })
+  await assert.rejects(auth.accessToken(), /credential_unavailable/)
+  assert.equal(calls, 1); assert.ok(await store.credential(await store.metadata()))
 })
 
 test('storage failure happens before asking the user to authorize', async () => {
@@ -121,7 +126,7 @@ test('local presence is unverified; expiry defeats even a cached access token an
   let calls = 0
   const auth = new AuthSession({ server: store.server, store, request: async () => { calls++; throw new APIError('stop_before_pairing') } })
   assert.equal((await auth.status()).state, 'unverified')
-  await store.save({ ...value, expires_at: 1 })
+  await store.save({ ...refreshOnly(value), expires_at: 1 })
   auth.access = value
   assert.equal((await auth.status()).state, 'expired')
   await assert.rejects(auth.accessToken(), { code: 'authorization_expired' })
@@ -150,21 +155,24 @@ test('transient business failure and gateway blocks retain credentials and recov
   assert.equal((await auth.status()).state, 'connected')
 })
 
-test('refresh distinguishes expiry, revocation and uncertainty, preserves reason and never retries', async (t) => {
+test('only confirmed invalid authorization clears login; refresh network failure retries once and retains it', async (t) => {
   for (const [failure, state, code] of [[new APIError('authorization_expired', 401), 'expired', 'authorization_expired'],
     [new APIError('authorization_revoked', 401), 'revoked', 'authorization_revoked'],
     [new APIError('invalid_grant', 401), 'reconnect_required', 'authorization_invalid'],
-    [new APIError('network_error'), 'reconnect_required', 'refresh_result_uncertain']]) {
-    const store = await fixture(t), value = tokens(); await store.save(value)
+    [new APIError('network_error'), 'offline', 'refresh_unavailable']]) {
+    const store = await fixture(t), value = tokens(); await store.save(refreshOnly(value))
     let calls = 0
-    const auth = new AuthSession({ server: store.server, store, request: async () => { calls++; throw failure } })
+    const auth = new AuthSession({ server: store.server, store, sleep: async () => {}, request: async (_origin, route) => {
+      if (route === '/help') return {}
+      calls++; throw failure
+    } })
     await assert.rejects(auth.accessToken(), { code })
     await assert.rejects(auth.accessToken(), { code })
     const status = await auth.status()
-    assert.equal(status.state, state); assert.equal(status.reconnect_required, true)
-    assert.equal(status.next_action, 'pipa_connect'); assert.equal(status.expires_at, value.expires_at)
-    if (failure.code === 'network_error') assert.equal(status.cause, 'network_error')
-    assert.equal(calls, 1); assert.equal(await store.metadata(), null)
+    const offline = failure.code === 'network_error'
+    assert.equal(status.state, state); assert.equal(status.reconnect_required, !offline)
+    assert.equal(status.next_action, offline ? 'retry_later' : 'pipa_connect'); assert.equal(status.expires_at, value.expires_at)
+    assert.equal(calls, offline ? 4 : 1); assert.equal(Boolean(await store.metadata()), offline)
     assert.ok(!JSON.stringify(status).includes(value.refresh_token))
   }
 })
@@ -196,17 +204,17 @@ test('late auth failure for an old grant cannot delete a replacement connection'
   assert.equal((await auth.status()).state, 'unverified')
 })
 
-test('a refresh uncertainty latch prevents reuse even if removing the private file fails', async (t) => {
-  const store = await fixture(t), value = tokens(); await store.save(value)
+test('network refresh failure never attempts to remove a credential even if cleanup is unavailable', async (t) => {
+  const store = await fixture(t), value = tokens(); await store.save(refreshOnly(value))
   const unavailableCleanup = {
     metadata: () => store.metadata(), credential: (meta) => store.credential(meta),
     withLock: (run) => store.withLock(run), forget: async () => { throw new Error('file unavailable') },
   }
   let calls = 0
-  const auth = new AuthSession({ server: store.server, store: unavailableCleanup, request: async () => { calls++; throw new APIError('network_error') } })
-  await assert.rejects(auth.accessToken(), { code: 'refresh_result_uncertain' })
-  await assert.rejects(auth.accessToken(), { code: 'refresh_result_uncertain' })
-  assert.equal(calls, 1); assert.equal((await auth.status()).state, 'reconnect_required')
+  const auth = new AuthSession({ server: store.server, store: unavailableCleanup, sleep: async () => {}, request: async () => { calls++; throw new APIError('network_error') } })
+  await assert.rejects(auth.accessToken(), { code: 'refresh_unavailable' })
+  assert.equal(calls, 2); assert.equal((await auth.status()).state, 'offline')
+  assert.ok(await store.metadata())
 })
 
 test('cancellation before refresh starts does not discard an unconsumed credential', async (t) => {

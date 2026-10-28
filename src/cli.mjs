@@ -185,7 +185,10 @@ const errorMessages = Object.freeze({
   authorization_required: '尚未连接 PIPA；请执行 pipa login。',
   authorization_expired: 'PIPA 授权已到期，请重新执行 pipa login。',
   authorization_revoked: 'PIPA 授权已撤销，请重新执行 pipa login。',
+  authorization_invalid: '当前授权不可用，请执行 pipa login 重新连接。',
   refresh_result_uncertain: '刷新结果不确定，请重新登录，并在网页检查可能遗留的连接。',
+  refresh_unavailable: '暂时无法刷新连接，登录已保留；请稍后重试原命令，无需重新登录。',
+  credential_unavailable: '本地凭据读写失败，未删除登录；请检查文件权限或稍后重试。',
   network_error: '网络暂不可用，不代表授权已过期；请稍后重试。',
   insufficient_scope: '当前授权缺少操作权限，请检查 PIPA 连接权限。',
   invalid_grant: '凭据不可用，请重新登录；无法据此判断是否过期或撤销。',
@@ -206,7 +209,10 @@ function errorResult(error) {
   if (error?.pipaAccessResponse === true && ['invalid_grant', 'unauthorized', 'authorization_invalid', 'access_token_expired'].includes(code)) {
     return { error: code, message: '本次访问凭据未被接受，已保留共享登录；请先运行 pipa status --json 检查，不必立即重新登录。', next_action: 'pipa status --json' }
   }
-  return { error: code, message: errorMessages[code] ?? '操作未确认成功，请检查命令和连接状态后重试。' }
+  const next = ['authorization_required', 'authorization_expired', 'authorization_revoked', 'authorization_invalid'].includes(code)
+    ? 'pipa login' : ['refresh_unavailable', 'network_error'].includes(code) ? 'retry_same_command' : 'pipa status --json'
+  return { error: code, message: errorMessages[code] ?? '操作未确认成功；命令用法见 pipa --help，连接问题用 pipa status --json 检查。', next_action: next,
+    ...(error?.diagnostics ? { diagnostics: error.diagnostics } : {}) }
 }
 
 async function createRuntime({ server, profile }) {

@@ -37,6 +37,7 @@ function snapshotArguments(args) {
 export class PipaClient {
   constructor({ server, auth, request = requestJSON }) {
     this.origin = server; this.auth = auth; this.request = request; this.tools = null; this.failures = new WeakSet()
+    this.toolsMeta = null; this.toolsExpires = 0; this.catalogCached = false
   }
 
   async authorized(route, options = {}) {
@@ -51,11 +52,12 @@ export class PipaClient {
       } catch (error) {
         // Only replay an explicit authentication rejection; do not clear a newer in-memory token.
         if (error.code === 'access_token_expired' && error.status === 401 && attempt === 0) {
-          if (this.auth.access?.access_token === token) this.auth.access = null
+          if (this.auth.rejectAccess) await this.auth.rejectAccess(token)
+          else if (this.auth.access?.access_token === token) this.auth.access = null
           continue
         }
         if (!(error instanceof APIError)) throw error
-        const failure = new APIError(error.code, error.status, error.retryAfter, identity.grantId)
+        const failure = new APIError(error.code, error.status, error.retryAfter, identity.grantId, error.diagnostics)
         Object.defineProperty(failure, 'pipaAccessResponse', { value: true })
         if (identity.credentialGeneration) Object.defineProperty(failure, 'credentialGeneration', { value: identity.credentialGeneration })
         throw failure
@@ -63,20 +65,35 @@ export class PipaClient {
     }
   }
 
-  async listTools({ signal } = {}) {
+  async listTools({ signal, force = false } = {}) {
     try {
+      if (signal?.aborted) throw new APIError('request_cancelled')
+      const meta = await this.auth.store?.metadata()
+      if (!force && meta?.expires_at > Date.now() / 1000) {
+        const cached = await this.auth.store.cachedCatalog?.(meta).catch(() => null)
+        if (cached) {
+          this.tools = validateCatalog({ tools: cached.tools }); this.toolsMeta = meta
+          this.toolsExpires = cached.expires_at; this.catalogCached = true
+          return structuredClone(this.tools)
+        }
+      }
       const result = await retryOnce(() => this.authorized('/tools', { signal }), { signal })
       const tools = validateCatalog(result)
       this.tools = tools
+      this.toolsMeta = meta; this.toolsExpires = Math.floor(Date.now() / 1000) + 300; this.catalogCached = false
+      if (meta) await this.auth.store.cacheCatalog?.(meta, tools).catch(() => {})
       return structuredClone(tools)
     } catch (error) { await this.failed(error); throw error }
   }
 
   async definition(name, signal) {
     if (typeof name !== 'string' || !toolName.test(name) || localNames.has(name)) throw new APIError('invalid_tool_name')
+    const meta = await this.auth.store?.metadata()
+    if (this.toolsExpires <= Date.now() / 1000 || this.auth.store && (!meta || meta.grant_id !== this.toolsMeta?.grant_id
+      || meta.account_id !== this.toolsMeta?.account_id || JSON.stringify(meta.scopes) !== JSON.stringify(this.toolsMeta?.scopes))) this.tools = null
     const previous = this.tools
     let tools = previous ?? await this.listTools({ signal })
-    if (previous && !tools.some((tool) => tool.name === name)) tools = await this.listTools({ signal })
+    if ((previous || this.catalogCached) && !tools.some((tool) => tool.name === name)) tools = await this.listTools({ signal, force: true })
     const definition = tools.find((tool) => tool.name === name)
     if (!definition) throw new APIError('tool_not_available: authorize required scopes and refresh tool list')
     return definition
@@ -99,7 +116,16 @@ export class PipaClient {
   async status({ signal } = {}) {
     if (signal?.aborted) throw new APIError('request_cancelled')
     let failure
-    try { await this.listTools({ signal }) } catch (error) { failure = error }
+    try {
+      const result = await retryOnce(() => this.authorized('/me', { signal }), { signal })
+      const meta = await this.auth.store?.metadata()
+      if (!isRecord(result) || !uuid.test(result.grant_id) || !uuid.test(result.user?.id)
+        || !Number.isSafeInteger(result.expires_at) || result.expires_at <= Date.now() / 1000
+        || !Array.isArray(result.scopes) || meta && (result.grant_id !== meta.grant_id || result.user.id !== meta.account_id
+          || result.expires_at !== meta.expires_at || JSON.stringify(result.scopes) !== JSON.stringify(meta.scopes))) {
+        throw new APIError('invalid_server_response')
+      }
+    } catch (error) { failure = error; await this.failed(error) }
     if (signal?.aborted || failure?.code === 'request_cancelled') throw new APIError('request_cancelled')
     let status
     try { status = await this.auth.status() }

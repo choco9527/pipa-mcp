@@ -1,7 +1,7 @@
 import { hostname } from 'node:os'
 import { createHash } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
-import { APIError, requestJSON } from './http.mjs'
+import { APIError, requestJSON, retryOnce, transient } from './http.mjs'
 import { authorizationFailure, connectionFailure, describeConnection } from './connection-state.mjs'
 
 export const scopes = ['tasks:read', 'tasks:write', 'tasks:delete', 'notes:read', 'notes:write', 'notes:delete']
@@ -72,7 +72,10 @@ export class AuthSession {
       // In particular a sibling may have rotated refresh while the old request was in flight.
       if (error.credentialGeneration && this.access?.refresh_token
         && generation(this.access.refresh_token) !== error.credentialGeneration) return false
-      if (!error.credentialGeneration || generation(this.access?.refresh_token) === error.credentialGeneration) this.access = null
+      if (!error.credentialGeneration || generation(this.access?.refresh_token) === error.credentialGeneration) {
+        await this.store.invalidateAccess?.(current, this.access?.access_token)
+        this.access = null
+      }
       this.connection = { code: 'not_verified', meta: current, checked_at: Math.floor(Date.now() / 1000) }
       return false // Keep the tool catalog; never replay the failed operation here.
     })
@@ -81,7 +84,9 @@ export class AuthSession {
     return this.store.withLock(async (guard) => {
       const current = await this.store.metadata()
       if (!sameGrant(current, expected) || error.grantId && current?.grant_id !== error.grantId) return false
-      guard(); await this.store.forget(current); this.access = null
+      guard(); this.access = null
+      this.connection = { code: connectionFailure(error), meta: current, checked_at: Math.floor(Date.now() / 1000) }
+      await this.store.forget(current)
       return true
     })
   }
@@ -140,15 +145,22 @@ export class AuthSession {
     if (signal?.aborted) throw new APIError('request_cancelled')
     const meta = await this.store.metadata()
     if (meta && this.connection?.meta?.grant_id === meta.grant_id && describeConnection(this.connection.code).reconnect_required) throw new APIError(this.connection.code, 401)
-    if (meta?.expires_at > Date.now() / 1000 && this.access && meta.grant_id === this.access.grant_id && this.access.access_expires_at > Date.now() / 1000 + 30) return this.access.access_token
+    if (meta?.expires_at > Date.now() / 1000 && this.access && sameGrant(meta, this.access) && this.access.access_expires_at > Date.now() / 1000 + 30) return this.access.access_token
     if (!this.refreshing) this.refreshing = this.refresh(signal).finally(() => { this.refreshing = null })
     return this.refreshing
+  }
+  async rejectAccess(token) {
+    return this.store.withLock(async (guard) => {
+      const meta = await this.store.metadata()
+      guard(); await this.store.invalidateAccess?.(meta, token)
+      if (this.access?.access_token === token) this.access = null
+    })
   }
   async refresh(signal) {
     return this.store.withLock(async (guard) => {
       const meta = await this.store.metadata(), credential = await this.store.credential(meta)
       return this.refreshLocked(meta, credential, guard, signal)
-    })
+    }, { signal })
   }
   async refreshLocked(meta, credential, guard, signal) {
     if (!credential) throw new APIError(this.connection?.code && describeConnection(this.connection.code).reconnect_required ? this.connection.code : 'authorization_required', 401)
@@ -158,24 +170,30 @@ export class AuthSession {
       throw new APIError('authorization_expired', 401)
     }
     if (signal?.aborted) throw new APIError('request_cancelled')
+    if (credential.access_token && credential.access_expires_at > Date.now() / 1000 + 30) {
+      this.access = { ...meta, ...credential, token_type: 'Bearer' }
+      return credential.access_token
+    }
     guard()
     let tokens
     try {
-      tokens = validateTokens(await this.request(this.server, '/token', { method: 'POST', signal, body: { grant_type: 'refresh_token', refresh_token: credential.refresh_token } }))
+      tokens = validateTokens(await retryOnce(() => this.request(this.server, '/token', { method: 'POST', signal, timeoutMs: 15000,
+        body: { grant_type: 'refresh_token', refresh_token: credential.refresh_token } }), { signal, sleep: this.sleep }))
       if (tokens.account_id !== meta.account_id || tokens.grant_id !== meta.grant_id) throw new APIError('credential_identity_changed')
       guard(); const saved = await this.store.save(tokens); this.access = tokens
       this.connection = { code: 'connected', meta: saved, checked_at: Math.floor(Date.now() / 1000) }
       return tokens.access_token
     } catch (error) {
-      // Never revoke an unexpected grant returned by a faulty or malicious server.
-      if (tokens && sameGrant(tokens, meta)) {
-        try { guard(); await this.request(this.server, '/logout', { method: 'POST', body: {}, token: tokens.access_token }) } catch {}
-      }
-      const code = authorizationFailure(error) ? connectionFailure(error) : 'refresh_result_uncertain'
       this.access = null
-      this.connection = { code, meta, cause: connectionFailure(error) ?? 'invalid_refresh_response', checked_at: Math.floor(Date.now() / 1000) }
-      try { guard(); await this.store.forget(meta) } catch {} // The in-memory latch still prevents reuse if cleanup cannot complete.
-      throw new APIError(code, 401) // Never expose a transient status that business retry could replay as refresh.
+      if (error.code === 'request_cancelled' || signal?.aborted) throw new APIError('request_cancelled')
+      const code = authorizationFailure(error) ? connectionFailure(error) : transient(error) ? 'refresh_unavailable'
+        : error instanceof APIError ? error.code : 'credential_unavailable'
+      this.connection = { code: connectionFailure(error) ?? 'credential_unavailable', meta, checked_at: Math.floor(Date.now() / 1000) }
+      if (authorizationFailure(error)) {
+        this.connection = { ...this.connection, code }
+        try { guard(); await this.store.forget(meta) } catch {} // In-memory state still rejects confirmed invalid grants.
+      }
+      throw new APIError(code, authorizationFailure(error) ? 401 : 0, 0, undefined, error.diagnostics)
     }
   }
   async disconnect(signal) {
@@ -191,7 +209,7 @@ export class AuthSession {
       const revoked = await this.revokeLocked(meta, credential, guard, signal)
       guard(); await this.store.forget(meta)
       return { disconnected: true, revoked, message: revoked ? 'Server grant revoked and local credential deleted.' : 'Grant was already expired or revoked; local credential deleted.' }
-    })
+    }, { signal })
     this.access = null; this.connection = null; this.onChange()
     return result
   }
@@ -211,6 +229,7 @@ export class AuthSession {
         return true
       } catch (error) {
         if (error.code === 'access_token_expired' && error.status === 401 && attempt === 0) {
+          guard(); await this.store.invalidateAccess?.(meta, token)
           this.access = null
           token = await this.refreshLocked(meta, await this.store.credential(meta), guard, signal)
           continue

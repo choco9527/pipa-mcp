@@ -9,6 +9,7 @@ const states = {
   authorization_revoked: ['revoked', 'PIPA Agent 授权已撤销，请重新连接并由用户确认。', 'pipa_connect'],
   authorization_invalid: ['reconnect_required', 'PIPA Agent 凭据不可用，需要重新连接；无法据此确认是过期还是撤销。', 'pipa_connect'],
   refresh_result_uncertain: ['reconnect_required', '刷新凭据的结果不确定，不能确认授权是否有效。为避免重复消费，已停止刷新；请重新连接，并在网页检查可能遗留的连接。', 'pipa_connect'],
+  refresh_unavailable: ['offline', '暂时无法刷新连接，登录已保留。请稍后重试原命令，不需要重新登录。', 'retry_later'],
   network_error: ['offline', '暂时无法连接 PIPA，不代表授权过期。已有凭据保留，可稍后重试。', 'retry_later'],
   service_unavailable: ['offline', 'PIPA 服务暂不可用或请求受限，不代表授权过期。请稍后重试。', 'retry_later'],
   gateway_blocked: ['blocked', '机器接口被登录页或安全网关拦截。请检查 /api/agent/v1/* 的 Cloudflare 配置；不要复制网页 Cookie。', 'check_server_configuration'],
@@ -26,14 +27,14 @@ export function describeConnection(code) {
 
 export function connectionFailure(error) {
   const code = error instanceof APIError ? error.code.split(':', 1)[0] : ''
-  if (['authorization_expired', 'authorization_revoked', 'refresh_result_uncertain', 'authorization_required'].includes(code)) return code
+  if (['authorization_expired', 'authorization_revoked', 'refresh_result_uncertain', 'authorization_required', 'refresh_unavailable', 'credential_unavailable'].includes(code)) return code
   if (code === 'gateway_login_or_non_json') return 'gateway_blocked'
   if (['invalid_grant', 'unauthorized', 'authorization_invalid', 'access_token_expired'].includes(code)) return 'authorization_invalid'
   if (error?.status === 401) return 'server_configuration_error'
   if (code === 'request_cancelled') return null
   if (code === 'network_error') return code
   if (error && transient(error)) return 'service_unavailable'
-  if (['host_denied', 'origin_denied', 'invalid_server_response', 'invalid_tool_catalog', 'response_too_large'].includes(code)) return 'server_configuration_error'
+  if (['host_denied', 'origin_denied', 'invalid_server_response', 'invalid_tool_catalog', 'response_too_large', 'invalid_token_response', 'credential_identity_changed'].includes(code)) return 'server_configuration_error'
   if (!(error instanceof APIError)) return 'credential_unavailable'
   return null // Business validation, version conflicts and missing scopes do not invalidate a grant.
 }

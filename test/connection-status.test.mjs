@@ -24,6 +24,11 @@ async function fixture(t, handler, value = tokens()) {
   if (value) await store.save(value)
   const request = async (_server, route, options) => {
     const result = await handler(route, options)
+    if (route === '/help') return result ?? {}
+    if (route === '/me') {
+      const meta = await store.metadata()
+      return result ?? { user: { id: meta.account_id }, grant_id: meta.grant_id, scopes: meta.scopes, expires_at: meta.expires_at }
+    }
     return result ?? (route === '/tools' ? catalog : tokens('b'))
   }
   const auth = new AuthSession({ server, store, request }); auth.access = value
@@ -128,17 +133,18 @@ test('a second access expiry stops, while an ambiguous access rejection preserve
   }
 })
 
-test('refresh response loss stops at one attempt and stays distinct from offline or expired', async (t) => {
+test('refresh response loss retries once and reports offline without forcing a new login', async (t) => {
   let failRefresh = false, calls = 0
   const { client, auth, store } = await fixture(t, async (route) => {
     if (route === '/token' && failRefresh) { calls++; throw new APIError('network_error') }
   })
-  auth.access = null; failRefresh = true
+  auth.access = null; failRefresh = true; auth.sleep = async () => {}
+  await auth.rejectAccess(tokens().access_token)
   const result = await client.callTool({ name: 'pipa_task_create', arguments: { operation_id: '77777777-7777-4777-8777-777777777777' } })
-  assert.equal(result.isError, true); assert.equal(result.structuredContent.error, 'refresh_result_uncertain')
-  assert.equal(result.structuredContent.connection.state, 'reconnect_required')
-  assert.equal(result.structuredContent.connection.cause, 'network_error')
-  assert.equal(calls, 1); assert.equal(await store.metadata(), null)
+  assert.equal(result.isError, true); assert.equal(result.structuredContent.error, 'refresh_unavailable')
+  assert.equal(result.structuredContent.connection.state, 'offline')
+  assert.equal(result.structuredContent.reconnect_required, false)
+  assert.equal(calls, 2); assert.ok(await store.metadata())
 })
 
 test('a signed-out Agent receives an explicit connect action, not an unavailable-tool dead end', async (t) => {
@@ -152,15 +158,17 @@ test('a signed-out Agent receives an explicit connect action, not an unavailable
 
 test('an unknown JSON 401 or malformed catalog is configuration failure, not confirmed invalid credentials', async (t) => {
   let failure
-  const { client, store } = await fixture(t, async (route) => { if (failure && route === '/tools') throw failure })
+  const { client, store } = await fixture(t, async (route) => { if (failure && route === '/me') throw failure })
   failure = new APIError('request_failed', 401)
   let status = (await client.callTool({ name: 'pipa_connection_status', arguments: {} })).structuredContent
   assert.equal(status.state, 'blocked'); assert.equal(status.reconnect_required, false)
   assert.ok(await store.metadata())
   failure = null
   const malformed = await fixture(t, async (route) => route === '/tools' ? { tools: [{ name: 123 }] } : undefined)
+  assert.equal((await malformed.auth.status()).state, 'blocked')
+  assert.equal((await malformed.auth.status()).code, 'server_configuration_error')
   status = (await malformed.client.callTool({ name: 'pipa_connection_status', arguments: {} })).structuredContent
-  assert.equal(status.state, 'blocked'); assert.equal(status.code, 'server_configuration_error')
+  assert.equal(status.state, 'connected', 'lightweight identity checks must not depend on catalog parsing')
   assert.ok(await malformed.store.metadata())
 })
 

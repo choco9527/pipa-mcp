@@ -68,6 +68,7 @@ async function respond(request, response, state) {
   const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : {}
   const send = (value, status = 200) => { response.writeHead(status, { 'Content-Type': 'application/json' }); response.end(JSON.stringify(value)) }
   const route = request.url.replace('/api/agent/v1', '')
+  if (route === '/help') return send({})
   if (route === '/device') {
     state.devices++
     return send({ device_code: `pad1_${'d'.repeat(43)}`, user_code: userCode, interval: 5,
@@ -81,6 +82,7 @@ async function respond(request, response, state) {
   }
   const bearer = request.headers.authorization?.replace(/^Bearer /, '')
   if (state.revoked || !state.access.has(bearer)) return send({ error: { code: 'authorization_revoked' } }, 401)
+  if (route === '/me') return send({ user: { id: base.account_id }, grant_id: base.grant_id, scopes: base.scopes, expires_at: base.expires_at })
   if (route === '/tools') return send({ tools: catalog })
   if (route === '/tools/pipa_tasks_search') return send({ tasks: [{ title: 'Isolated fixture task' }] })
   if (route === '/logout') { state.revoked = true; return send({ revoked: true }) }

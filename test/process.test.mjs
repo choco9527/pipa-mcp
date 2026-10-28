@@ -70,7 +70,7 @@ test('child monitoring reports startup failures and exits before readiness', { t
   assert.match(results[1].message, /code 3.*fixture failed/)
 })
 
-test('independent Node processes serialize refresh and reread the previous rotation', { timeout: 120000 }, async (t) => {
+test('independent Node processes coalesce refresh and share the resulting access cache', { timeout: 120000 }, async (t) => {
   const children = []
   t.after(() => stopChildren(children))
   const directory = await temporary(t)
@@ -82,7 +82,8 @@ test('independent Node processes serialize refresh and reread the previous rotat
     import { AuthSession } from ${source('auth')};
     import { once } from 'node:events';
     const store = new CredentialStore({ directory: process.argv[1], server: 'https://pipa.test', profile: 'test' });
-    const auth = new AuthSession({ server: store.server, store, request: async (_origin, _route, { body }) => {
+    const auth = new AuthSession({ server: store.server, store, request: async (_origin, route, { body }) => {
+      if (route === '/help') return {};
       const next = String.fromCharCode(body.refresh_token.charCodeAt(5) + 1).repeat(43);
       await new Promise(resolve => setTimeout(resolve, 150));
       return { ...${JSON.stringify(base)}, token_type: 'Bearer', access_token: 'paa1_' + next, refresh_token: 'par1_' + next, access_expires_at: Math.floor(Date.now() / 1000) + 900 };
@@ -103,7 +104,7 @@ test('independent Node processes serialize refresh and reread the previous rotat
     const result = await bounded(exited, 60000, `child ${index} to exit`)
     assert.ok(result.ok, result.message)
   }))
-  assert.equal((await store.credential(await store.metadata())).refresh_token, `par1_${'c'.repeat(43)}`)
+  assert.equal((await store.credential(await store.metadata())).refresh_token, `par1_${'b'.repeat(43)}`)
 })
 
 test('real stdio MCP introduces PIPA without touching the user home or requiring a browser', { timeout: 60000 }, async (t) => {

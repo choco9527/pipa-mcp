@@ -17,6 +17,7 @@ function tokens(letter = 'a') {
     access_token: `paa1_${letter.repeat(43)}`, refresh_token: `par1_${letter.repeat(43)}`, token_type: 'Bearer', scopes: ['tasks:read', 'tasks:write'],
     access_expires_at: Math.floor(Date.now() / 1000) + 900, expires_at: Math.floor(Date.now() / 1000) + 86400 }
 }
+function me(value = tokens()) { return { user: { id: value.account_id }, grant_id: value.grant_id, scopes: value.scopes, expires_at: value.expires_at } }
 const simpleAuth = () => ({ async accessToken() { return 'test-access' }, close() {} })
 async function fixture(t, request) {
   const directory = await mkdtemp(path.join(tmpdir(), 'pipa-client-test-'))
@@ -95,8 +96,9 @@ test('unsafe writes and business conflicts are never retried', async () => {
 
 test('status verifies remotely, preserves credentials while offline, and recovers', async (t) => {
   let offline = false
-  const { client, store } = await fixture(t, async () => {
+  const { client, store } = await fixture(t, async (_origin, route) => {
     if (offline) throw new APIError('network_error')
+    if (route === '/me') return me(await store.metadata())
     return { tools: [tool()] }
   })
   const connected = await client.status()
@@ -126,7 +128,7 @@ test('terminal authorization failure removes the shared catalog and returns revo
   assert.equal(await store.metadata(), null); assert.equal(client.tools, null)
 })
 
-test('CLI and MCP sessions reuse one saved authorization and serialize refresh rotations', async (t) => {
+test('CLI and MCP sessions reuse one saved authorization without refresh rotations', async (t) => {
   const refreshes = [], routes = []
   const request = async (_origin, route, options) => {
     routes.push(route)
@@ -140,7 +142,7 @@ test('CLI and MCP sessions reuse one saved authorization and serialize refresh r
   const mcp = new Connector({ server, auth: mcpAuth, request }); t.after(() => mcp.close())
   cliAuth.access = null
   await Promise.all([cli.listTools(), mcp.discover()])
-  assert.deepEqual(refreshes, [tokens('a').refresh_token, tokens('b').refresh_token])
+  assert.deepEqual(refreshes, [])
   assert.equal((await cli.callTool('pipa_tasks_search', {})).tasks.length, 0)
   assert.equal((await mcp.call('pipa_tasks_search', {})).isError, false)
   assert.equal((await mcpAuth.status()).state, 'connected')
@@ -184,8 +186,9 @@ test('a sibling CLI refresh cannot make an older MCP access response erase the s
   await client.listTools()
   const call = client.callTool('pipa_task_create', {})
   await new Promise((resolve) => setImmediate(resolve))
-  const sibling = new AuthSession({ server, store, request: async () => tokens('b') })
+  const sibling = new AuthSession({ server, store, request: async (_origin, route) => route === '/help' ? {} : tokens('b') })
   t.after(() => sibling.close())
+  await sibling.rejectAccess(tokens('a').access_token)
   await sibling.accessToken()
   reject(new APIError('invalid_grant', 401))
   await assert.rejects(call, { code: 'invalid_grant' })
@@ -214,10 +217,10 @@ test('a propagated failure updates shared authorization state only once', async 
 
 test('cancelled status never falls back to an earlier connected state', async (t) => {
   let cancelled = false, requests = 0
-  const { client, store } = await fixture(t, async () => {
+  const { client, store } = await fixture(t, async (_origin, route) => {
     requests++
     if (cancelled) throw new APIError('request_cancelled')
-    return { tools: [] }
+    return route === '/me' ? me(await store.metadata()) : { tools: [] }
   })
   assert.equal((await client.status()).state, 'connected')
   await assert.rejects(client.status({ signal: AbortSignal.abort() }), { code: 'request_cancelled' })

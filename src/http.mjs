@@ -1,27 +1,44 @@
 import { setTimeout as delay } from 'node:timers/promises'
 
 export class APIError extends Error {
-  constructor(code, status = 0, retryAfter = 0, grantId) { super(code); this.code = code; this.status = status; this.retryAfter = retryAfter; this.grantId = grantId }
+  constructor(code, status = 0, retryAfter = 0, grantId, diagnostics) {
+    super(code); this.code = code; this.status = status; this.retryAfter = retryAfter; this.grantId = grantId
+    if (diagnostics) this.diagnostics = safeDiagnostics(diagnostics)
+  }
 }
-export async function requestJSON(server, path, { method = 'GET', body, token, signal, fetcher = fetch } = {}) {
+export async function requestJSON(server, path, { method = 'GET', body, token, signal, fetcher = fetch, timeoutMs = 35000 } = {}) {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 35000) throw new APIError('invalid_request_timeout')
+  const started = performance.now(), deadline = AbortSignal.timeout(timeoutMs)
   let response, text
+  const diagnostics = (error) => ({ duration_ms: Math.round(performance.now() - started),
+    request_id: response?.headers.get('x-request-id'), cf_ray: response?.headers.get('cf-ray'),
+    network_code: error?.cause?.code ?? error?.code,
+    failure_stage: signal?.aborted ? 'cancelled' : deadline.aborted ? 'timeout' : response ? 'response_body' : 'connect' })
   try {
     response = await fetcher(`${server}/api/agent/v1${path}`, {
       method, body: body === undefined ? undefined : JSON.stringify(body), redirect: 'manual',
       headers: { Accept: 'application/json', 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(35000)]) : AbortSignal.timeout(35000),
+      signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
     })
     if (response.status >= 300 && response.status < 400 || !response.headers.get('content-type')?.includes('application/json')) throw new APIError('gateway_login_or_non_json: machine routes must not require browser challenges', response.status)
     // Fetch resolves at headers; body transmission can still fail after a committed write.
     text = await limitedText(response)
   } catch (error) {
-    if (error instanceof APIError) throw error
-    throw new APIError(signal?.aborted ? 'request_cancelled' : 'network_error')
+    if (error instanceof APIError) throw new APIError(error.code, error.status, error.retryAfter, error.grantId, diagnostics())
+    throw new APIError(signal?.aborted ? 'request_cancelled' : 'network_error', 0, 0, undefined, diagnostics(error))
   }
   let data
-  try { data = JSON.parse(text) } catch { throw new APIError('invalid_server_response', response.status) }
-  if (!response.ok) throw new APIError(typeof data?.error?.code === 'string' && /^[a-z][a-z0-9_]{0,99}$/.test(data.error.code) ? data.error.code : 'request_failed', response.status, retryDelay(response.headers.get('retry-after')))
+  try { data = JSON.parse(text) } catch { throw new APIError('invalid_server_response', response.status, 0, undefined, diagnostics()) }
+  if (!response.ok) throw new APIError(typeof data?.error?.code === 'string' && /^[a-z][a-z0-9_]{0,99}$/.test(data.error.code) ? data.error.code : 'request_failed', response.status, retryDelay(response.headers.get('retry-after')), undefined, diagnostics())
   return data
+}
+function safeDiagnostics(value) {
+  const allowedCodes = /^(ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|UND_ERR_(CONNECT|HEADERS|BODY)_TIMEOUT|ERR_TLS_CERT_ALTNAME_INVALID|CERT_HAS_EXPIRED)$/
+  return Object.freeze({ ...(Number.isSafeInteger(value.duration_ms) && value.duration_ms >= 0 ? { duration_ms: value.duration_ms } : {}),
+    ...(/^[a-zA-Z0-9_-]{1,100}$/.test(value.request_id ?? '') ? { request_id: value.request_id } : {}),
+    ...(/^[a-zA-Z0-9-]{1,64}$/.test(value.cf_ray ?? '') ? { cf_ray: value.cf_ray } : {}),
+    ...(allowedCodes.test(value.network_code ?? '') ? { network_code: value.network_code } : {}),
+    ...(['connect', 'response_body', 'timeout', 'cancelled'].includes(value.failure_stage) ? { failure_stage: value.failure_stage } : {}) })
 }
 async function limitedText(response) {
   if (!response.body) return ''

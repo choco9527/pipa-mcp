@@ -3,6 +3,24 @@ import assert from 'node:assert/strict'
 import { APIError, requestJSON, retryOnce } from '../src/http.mjs'
 import { Connector } from '../src/connector.mjs'
 
+test('network diagnostics retain safe timing and failure codes, never raw error messages or tokens', async () => {
+  const secret = 'fixture-private-authorization'
+  await assert.rejects(requestJSON('https://pipa.test', '/token', { fetcher: async () => {
+    throw new TypeError(secret, { cause: Object.assign(new Error(secret), { code: 'ENOTFOUND' }) })
+  } }), (error) => {
+    assert.equal(error.code, 'network_error'); assert.equal(error.diagnostics.network_code, 'ENOTFOUND')
+    assert.ok(Number.isSafeInteger(error.diagnostics.duration_ms))
+    assert.ok(!JSON.stringify(error).includes(secret)); assert.ok(!String(error).includes(secret))
+    return true
+  })
+  await assert.rejects(requestJSON('https://pipa.test', '/me', { fetcher: async () =>
+    Response.json({ error: { code: 'authorization_revoked' }, token: secret },
+      { status: 401, headers: { 'X-Request-ID': 'safe-request-id', 'CF-Ray': 'abc123-SIN' } }) }), (error) => {
+    assert.equal(error.diagnostics.request_id, 'safe-request-id'); assert.equal(error.diagnostics.cf_ray, 'abc123-SIN')
+    assert.ok(!JSON.stringify(error).includes(secret)); return true
+  })
+})
+
 function interruptedResponse(error = new TypeError('terminated')) {
   return new Response(new ReadableStream({
     start(controller) { controller.enqueue(new TextEncoder().encode('{"task":')) },
