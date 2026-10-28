@@ -84,7 +84,9 @@ test('Windows ACL command uses only owner SID and literal environment path, neve
   assert.equal(options.env.PIPA_PRIVATE_KIND, 'file')
   assert.ok(!args.join(' ').includes(target))
   assert.match(args.at(-1), /SetAccessRuleProtection\(\$true, \$false\)/)
-  assert.match(args.at(-1), /Set-Acl -LiteralPath/)
+  assert.match(args.at(-1), /\[System\.IO\.Directory\]::SetAccessControl\(\$env:PIPA_PRIVATE_PATH, \$acl\)/)
+  assert.match(args.at(-1), /\[System\.IO\.File\]::SetAccessControl\(\$env:PIPA_PRIVATE_PATH, \$acl\)/)
+  assert.doesNotMatch(args.at(-1), /Set-Acl|New-Object|Import-Module/)
   await assert.rejects(restrictWindowsPath(target, true, async () => { throw new Error('blocked') }), /credential_permissions_unavailable/)
 })
 

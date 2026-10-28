@@ -10,21 +10,30 @@ const maxBytes = 1024 * 1024
 const windowsACL = `
 $ErrorActionPreference = 'Stop'
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$rights = [System.Security.AccessControl.FileSystemRights]::FullControl
+$allow = [System.Security.AccessControl.AccessControlType]::Allow
 if ($env:PIPA_PRIVATE_KIND -eq 'directory') {
-  $acl = New-Object System.Security.AccessControl.DirectorySecurity
-  $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+  $acl = [System.Security.AccessControl.DirectorySecurity]::new()
+  $inherit = [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit
+  $rule = [System.Security.AccessControl.FileSystemAccessRule]::new($sid, $rights, $inherit, [System.Security.AccessControl.PropagationFlags]::None, $allow)
 } else {
-  $acl = New-Object System.Security.AccessControl.FileSecurity
-  $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'Allow')
+  $acl = [System.Security.AccessControl.FileSecurity]::new()
+  $rule = [System.Security.AccessControl.FileSystemAccessRule]::new($sid, $rights, $allow)
 }
 $acl.SetOwner($sid)
 $acl.SetAccessRuleProtection($true, $false)
 $acl.AddAccessRule($rule)
-Set-Acl -LiteralPath $env:PIPA_PRIVATE_PATH -AclObject $acl
+if ($env:PIPA_PRIVATE_KIND -eq 'directory') {
+  [System.IO.Directory]::SetAccessControl($env:PIPA_PRIVATE_PATH, $acl)
+} else {
+  [System.IO.File]::SetAccessControl($env:PIPA_PRIVATE_PATH, $acl)
+}
 `
 
 // No user path is interpolated into PowerShell code. Only the app's private
 // directory/files are passed through environment values; credentials never are.
+// Use Windows PowerShell's .NET Framework directly: parent shells may supply
+// an incompatible PSModulePath, making Set-Acl's module unavailable.
 export async function restrictWindowsPath(target, directory, run = execute) {
   const shell = path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
   try {
